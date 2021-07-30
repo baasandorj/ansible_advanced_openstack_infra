@@ -1,0 +1,69 @@
+---
+    - name: Loop for servers create
+      os_server:
+        cloud: "{{ _os_server.cloud | default('openstack') }}"
+        name: "{{ _os_server.instance_name }}"
+        state: "{{ _os_server.state | default(instance_state) | default('present') }}"
+        image: "{{ _os_server.image | default('rhel-7.6') }}"  
+        key_name: "{{ _os_server.key_name | default('ansible_ssh_key') }}"
+        flavor: "{{ _os_server.flavor | default('m2.medium') }}"
+        security_groups: "{{ _os_server.security_group_name }}"
+        delete_fip: yes
+        wait: no
+        nics:
+          - net-name: "{{ _os_server.nic | default('int_network') }}"
+        meta: "group={{ _os_server.group }},deployment_name={{ _os_server.deployment }}"
+        userdata: |
+          #!/bin/bash
+          curl -o /tmp/openstack.pub http://www.opentlc.com/download/ansible_bootcamp/openstack_keys/openstack.pub
+          cat /tmp/openstack.pub >> /home/cloud-user/.ssh/authorized_keys
+      loop: "{{ openstack_servers }}"
+      loop_control: 
+        loop_var: _os_server
+      async: 900
+      poll: 0
+      register: r_instances
+
+    - name: Wait for async OSP instance creation to complete
+      async_status: "jid={{ item.ansible_job_id }}"
+      register: r_wait
+      until: r_wait.finished
+      retries: 900
+      loop: "{{ r_instances.results }}"
+
+    - name: Debug instances 
+      debug:
+        msg: "Server is {{ __instance._os_server.instance_name }}"
+        verbosity: 2
+      loop: "{{ r_instances.results }}"
+      loop_control:
+        loop_var: __instance    
+
+    - when: instance_state | default(true) != 'absent' 
+      block:
+
+        - name: Add floating IP to instances
+          os_floating_ip:
+            cloud: openstack
+            state: "{{ instance_state | default('present') }}"
+            reuse: yes
+            server: "{{ __instance._os_server.instance_name }}"
+            network: ext_network
+            wait: true
+            timeout: 180
+          loop: "{{ r_instances.results }}"
+          loop_control:
+            loop_var: __instance
+          register: r_floating_ips
+
+        # - name: Wait for servers by name to be available
+        #   wait_for:
+        #     host: "{{ __fip.floating_ip.floating_ip_address }}"
+        #     port: 22
+        #     search_regex: OpenSSH
+        #     timeout: 600
+        #   loop: "{{ r_floating_ips.results }}"
+        #   loop_control:
+        #     loop_var: __fip
+        #   delegate_to: "{{ inventory_hostname }}"
+
